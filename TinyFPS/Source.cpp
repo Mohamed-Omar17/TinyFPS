@@ -1,12 +1,12 @@
 #define _USE_MATH_DEFINES
 #include <iostream>
 #include <fstream>
-#include <sstream>
-#include <iomanip>
 #include <vector>
 #include <cstdint>
 #include <cassert>
 #include <cmath>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h";
 
 
 
@@ -50,6 +50,67 @@ void draw_rectangle(std::vector<uint32_t>& img, const size_t img_w, const size_t
 }
 
 
+bool load_texture(const std::string filename, std::vector<uint32_t>& texture,
+	size_t& text_size, size_t& text_cnt) {
+	int nchannels = -1, w, h;
+	unsigned char* pixmap = stbi_load(filename.c_str(), &w, &h, &nchannels, 0);
+	if (!pixmap) {
+		std::cerr << "Error: can not load the textures" << std::endl;
+		return false;
+	}
+
+	if (4 != nchannels) {
+		std::cerr << "Error: the texture must be a 32 bit image" << std::endl;
+		stbi_image_free(pixmap);
+		return false;
+	}
+
+	text_cnt = w / h;
+	text_size = w / text_cnt;
+	if (w != h * int(text_cnt)) {
+		std::cerr << "Error: the texture file must contain N square textures packed horizontally" << std::endl;
+		stbi_image_free(pixmap);
+		return false;
+	}
+
+	texture = std::vector<uint32_t>(w * h);
+	for (int j = 0; j < h; j++) {
+		for (int i = 0; i < w; i++) {
+			uint8_t r = pixmap[(i + j * w) * 4+0];
+			uint8_t g = pixmap[(i + j * w) * 4+1];
+			uint8_t b = pixmap[(i + j * w) * 4+2];
+			uint8_t a = pixmap[(i + j * w) * 4+3];
+			texture[i + j * w] = pack_color(r, g, b, a);
+		}
+	}
+	stbi_image_free(pixmap);
+	return true;
+}
+
+
+
+
+std::vector<uint32_t> texture_column(const std::vector<uint32_t>& img, const size_t
+	texsize, const size_t ntextures, const size_t texid, const size_t texcoord, const size_t column_height) {
+	const size_t img_w = texsize * ntextures;
+	const size_t img_h = texsize;
+	assert(img.size() == img_w * img_h && texcoord < texsize && texid < ntextures);
+	std::vector<uint32_t> column(column_height);
+	for (size_t y = 0; y < column_height; y++) {
+		size_t pix_x = texid * texsize + texcoord;
+		size_t pix_y = (y * texsize) / column_height;
+		column[y] = img[pix_x + pix_y * img_w];
+	}
+	return column;
+}
+
+
+
+
+
+
+
+
 int main() {
 	const size_t win_w = 1024; //image width
 	const size_t win_h = 512; //image height
@@ -57,22 +118,22 @@ int main() {
 	
 	const size_t map_w = 16; //map width
 	const size_t map_h = 16; //map height
-	const char map[] = "0000222222220000"\
+	const char map[] =  "0000222222220000"\
 						"1              0"\
 						"1      11111   0"\
 						"1     0        0"\
 						"0     0  1110000"\
 						"0     3        0"\
 						"0   10000      0"\
-						"0   0   11100  0"\
-						"0   0   0      0"\
-						"0   0   1  00000"\
+						"0   3   11100  0"\
+						"5   4   0      0"\
+						"5   4   1  00000"\
 						"0       1      0"\
 						"2       1      0"\
 						"0       0      0"\
 						"0 0000000      0"\
 						"0              0"\
-						"0002222222200000"; // our game map
+						"0002222222200000"; // our game map// our game map
 	assert(sizeof(map) == map_w * map_h + 1); //+1 for the null terminated string
 	
 	float player_x = 3.456; //player x position
@@ -84,11 +145,14 @@ int main() {
 	float player_a = 1.523;
 	const float fov =  M_PI/ 3.; //field of view is 60 degrees,common for raycasting games like Wolfenstein
 	
-	const size_t ncolors = 10;
-	std::vector<uint32_t> colors(ncolors);
 
-	for (size_t i = 0; i < ncolors; i++) {
-		colors[i] = pack_color(rand() % 255, rand() % 255, rand() % 255);
+
+	std::vector<uint32_t> walltext; //textures for the walls
+	size_t walltext_size; //texture dimensions (it is a square)
+	size_t walltext_cnt; //number of different textures in the image
+	if (!load_texture("./walltext.png", walltext, walltext_size, walltext_cnt)) {
+		std::cerr << "Failed to load wall textures" << std::endl;
+		return -1;
 	}
 
 
@@ -96,53 +160,62 @@ int main() {
 	const size_t rect_h = win_h / map_h; // 512/16 = 32
 
 
-	for (size_t frame = 0; frame < 360; frame++)
-	{
-		std::stringstream ss;
-		ss << std::setfill('0') << std::setw(5) << frame << ".ppm";
-		player_a += 2 * M_PI / 360;
-
-		framebuffer = std::vector<uint32_t>(win_w * win_h, pack_color(255, 255, 255)); // clear the screen
-
-
-		for (size_t j = 0; j < map_h; j++) {
-			for (size_t i = 0; i < map_w; i++) {
-				if (map[i + j * map_w] == ' ') continue;
-				size_t rect_x = i * rect_w;
-				size_t rect_y = j * rect_h;
-				size_t icolor = map[i + j * map_w] - '0';
-				assert(icolor < ncolors);
-				draw_rectangle(framebuffer, win_w, win_h, rect_x, rect_y, rect_w, rect_h,
-					colors[icolor]);
-			}
+	for (size_t j = 0; j < map_h; j++) {
+		for (size_t i = 0; i < map_w; i++) {
+			if (map[i + j * map_w] == ' ') continue; //skip empty spaces
+			size_t rect_x = i * rect_w;
+			size_t rect_y = j * rect_h;
+			size_t texid = map[i + j * map_w] - '0';
+			assert(texid < walltext_cnt);
+			draw_rectangle(framebuffer, win_w, win_h, rect_x, rect_y,
+				rect_w, rect_h, walltext[texid*walltext_size]); //color taken from top left pixel of the texture #texid
 		}
-
-		for (size_t i = 0; i < win_w / 2; i++) { //starts image at x = 512 (right side of the screen)
-			float angle = player_a - fov / 2 + fov * i / float(win_w);
-
-			for (float t = 0; t < 20; t += 0.01) { //t is the direction of the array, the number is the distance along the ray where you place the marker
-				float cx = player_x + t * cos(angle); //finds the marker's x position
-				float cy = player_y + t * sin(angle); //fins the marker's y position
-
-				size_t pix_x = cx * rect_w;
-				size_t pix_y = cy * rect_h;
-
-				framebuffer[pix_x + pix_y * win_w] = pack_color(160, 160, 160); //draws visibility cone
+	}
 
 
-				if (map[int(cx) + int(cy) * map_w] != ' ') { //draw the vertical column to create an illusion of 3d
-					size_t icolor = map[int(cx) + int(cy) * map_w] - '0';
-					assert(icolor < ncolors);
-					size_t column_height = win_h / (t*cos(angle-player_a));
-					draw_rectangle(framebuffer, win_w, win_h, win_w / 2 + i, win_h / 2 - column_height / 2,
-						1, column_height, colors[icolor]);
-					break;
+	for (size_t i = 0; i < win_w / 2; i++) { //starts image at x = 512 (right side of the screen)
+		float angle = player_a - fov / 2 + fov * i / float(win_w);
+
+		for (float t = 0; t < 20; t += 0.01) { //t is the direction of the array, the number is the distance along the ray where you place the marker
+			float cx = player_x + t * cos(angle); //finds the marker's x position
+			float cy = player_y + t * sin(angle); //fins the marker's y position
+
+			int pix_x = cx * rect_w;
+			int pix_y = cy * rect_h;
+
+			framebuffer[pix_x + pix_y * win_w] = pack_color(160, 160, 160); //draws visibility cone
+
+
+			if (map[int(cx) + int(cy) * map_w] != ' ') { //draw the vertical column to create an illusion of 3d
+				size_t texid = map[int(cx) + int(cy) * map_w] - '0';
+				assert(texid < walltext_cnt);
+				size_t column_height = win_h / (t*cos(angle-player_a));
+				
+
+				float hitx = cx - floor(cx + 0.5); //hitx and hity contain (signed) fractional parts of cx and cy
+				float hity = cy - floor(cy + 0.5);
+
+				int x_texcoord = hitx * walltext_size;
+				if (std::abs(hity) > std::abs(hitx)) { //determines whether we hit a 'vertical' wall or 'horizontal' wall
+					x_texcoord = hity * walltext_size;
 				}
+				if (x_texcoord < 0) x_texcoord += walltext_size; //x_texcoord can be negative, use this to fix that
+				assert(x_texcoord >= 0 && x_texcoord < (int)walltext_size);
+
+				std::vector<uint32_t> column = texture_column(walltext, walltext_size, walltext_cnt, texid, x_texcoord, column_height);
+				pix_x = win_w / 2 + i;
+				for (size_t j = 0; j < column_height; j++) {
+					pix_y = j + win_h / 2 - column_height / 2;
+					if (pix_y<0 || pix_y >(int)win_h) continue;
+					framebuffer[pix_x + pix_y * win_w] = column[j];
+				}
+
+				break;
 			}
 		}
-		drop_ppm_image(ss.str(), framebuffer, win_w, win_h);
 	}
 	
+	drop_ppm_image("./out.ppm", framebuffer, win_w, win_h);
 
 	return 0;
 }
